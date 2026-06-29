@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"><title>Remote Desktop</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;overflow:hidden;position:fixed;width:100vw;height:100vh;touch-action:none;font-family:sans-serif}
+canvas{position:fixed;top:0;left:0;width:100vw;height:100vh;object-fit:contain}
+#h{position:fixed;top:8px;left:8px;color:#0f0;font:13px monospace;background:rgba(0,0,0,.6);padding:6px 10px;border-radius:4px;z-index:10;pointer-events:none}
+#ctrl{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.7);border-radius:8px;padding:8px 12px;display:flex;gap:6px;z-index:10;flex-wrap:wrap;justify-content:center;align-items:center}
+#ctrl button{background:#444;color:#fff;border:1px solid #666;padding:6px 12px;border-radius:4px;font:12px sans-serif;cursor:pointer;min-width:36px;text-align:center}
+#ctrl button:hover{background:#555}
+#ctrl button.on{background:#2a6;border-color:#4a8}
+#clock{position:fixed;top:0;left:0;width:100vw;height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;cursor:pointer}
+#time{font-size:18vw;font-weight:bold;letter-spacing:4px;line-height:1;font-family:Consolas,monospace;color:#fff}
+#date{color:#444;font-size:14px;letter-spacing:2px;margin-top:24px;font-family:Consolas,monospace}
+</style></head>
+<body>
+<canvas id="c"></canvas>
+<div id="h">启动...</div>
+<div id="ctrl">
+<button id="r0">⬆</button><button id="r90">➡</button><button id="r180">⬇</button><button id="r270">⬅</button><button id="full">⛶</button>
+</div>
+<div id="clock"><div id="time"></div><div id="date"></div></div>
+<script>
+const WP=location.protocol==='https:'?'wss://':'ws://',H=location.hostname,U=[`${WP}${H}/ws`,`${WP}${H}:8765/`],AU=[`${WP}${H}/audio/`,`${WP}${H}:8767/`];
+const C=document.getElementById('c'),CX=C.getContext('2d'),hud=document.getElementById('h');
+const clock=document.getElementById('clock'),timeEl=document.getElementById('time'),dateEl=document.getElementById('date');
+let idx=0,ws=null,fc=0,bc=0,lt=performance.now(),rt=null,connected=false,angle=0,imgW=0,imgH=0;
+function pad(n){return n.toString().padStart(2,'0')}
+function updateClock(){const n=new Date();timeEl.textContent=pad(n.getHours())+':'+pad(n.getMinutes())+':'+pad(n.getSeconds());dateEl.textContent=n.getFullYear()+'/'+pad(n.getMonth()+1)+'/'+pad(n.getDate())}
+updateClock();setInterval(updateClock,1000);
+function setAngle(a){angle=a;document.querySelectorAll('#ctrl button[id^=r]').forEach(b=>b.className='');document.getElementById('r'+a).className='on';redraw()}
+function redraw(){if(!connected||!imgW)return;const vw=window.innerWidth,vh=window.innerHeight;const sw=angle%180?imgH:imgW,sh=angle%180?imgW:imgH;const scale=Math.min(vw/sw,vh/sh);C.style.width=(sw*scale)+'px';C.style.height=(sh*scale)+'px';C.style.left=((vw-sw*scale)/2)+'px';C.style.top=((vh-sh*scale)/2)+'px';if(angle%180){C.width=imgH;C.height=imgW}else{C.width=imgW;C.height=imgH}}
+function showStream(){connected=true;C.style.display='block';hud.style.display='block';clock.style.display='none';redraw()}
+function showClock(){connected=false;C.style.display='none';hud.style.display='none';clock.style.display='flex'}
+window.addEventListener('resize',redraw);
+document.getElementById('r0').onclick=()=>setAngle(0);document.getElementById('r90').onclick=()=>setAngle(90);
+document.getElementById('r180').onclick=()=>setAngle(180);document.getElementById('r270').onclick=()=>setAngle(270);
+document.getElementById('full').onclick=()=>{document.fullscreenElement?document.exitFullscreen():document.body.requestFullscreen()};
+
+let actx=null,audioWs=null,audioBuf=[],audioOff=0,audioProc=null,audioStarted=false;
+function initAudio(){
+  if(audioStarted)return;audioStarted=true;
+  if(!actx)actx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:48000});
+  if(actx.state==='suspended')actx.resume();
+  if(!audioProc){
+    audioProc=actx.createScriptProcessor(4096,0,1);
+    let started=false;
+    audioProc.onaudioprocess=(e)=>{
+      const out=e.outputBuffer.getChannelData(0),n=out.length,avail=audioBuf.length-audioOff;
+      if(!started){if(avail<9600){out.fill(0);return}started=true}
+      if(avail<n){audioOff=audioBuf.length;out.fill(0);return}
+      for(let i=0;i<n;i++)out[i]=audioBuf[audioOff+i];
+      audioOff+=n;if(audioOff>120000){audioBuf.splice(0,audioOff);audioOff=0}
+    };audioProc.connect(actx.destination);
+  }
+  audioWs=new WebSocket(AU[0]);audioWs.binaryType='arraybuffer';
+  audioWs.onopen=()=>{if(actx.state==='suspended')actx.resume();audioBuf=[];audioOff=0};
+  audioWs.onmessage=(e)=>{if(typeof e.data==='string')return;if(!actx)return;const d=new Int16Array(e.data);for(let i=0;i<d.length;i++)audioBuf.push(d[i]/32768)};
+  audioWs.onclose=()=>{setTimeout(initAudio,2000)};
+}
+C.onclick=()=>{initAudio()};clock.onclick=()=>{initAudio()};
+
+function connect(){
+  if(rt){clearTimeout(rt);rt=null}
+  if(ws)try{ws.close()}catch(e){}
+  if(idx>=U.length)idx=0;
+  const url=U[idx++];hud.textContent='连接...';showClock();setAngle(0);
+  ws=new WebSocket(url);ws.binaryType='arraybuffer';
+  ws.onopen=()=>{hud.textContent='已连接';idx=0};
+  ws.onmessage=async(e)=>{
+    if(typeof e.data==='string')return;
+    bc+=e.data.byteLength;
+    const arr=new Uint8Array(e.data);
+    if(arr[0]===0xFF&&arr[1]===0xD8){
+      if(!connected){showStream();initAudio()}
+      try{
+        const bmp=await createImageBitmap(new Blob([e.data],{type:'image/jpeg'}));
+        imgW=bmp.width;imgH=bmp.height;redraw();
+        CX.save();CX.translate(C.width/2,C.height/2);CX.rotate(angle*Math.PI/180);
+        CX.drawImage(bmp,-imgW/2,-imgH/2,imgW,imgH);CX.restore();
+        bmp.close();fc++;
+      }catch(e){}
+    }
+  };
+  ws.onclose=()=>{showClock();if(!rt)rt=setTimeout(connect,2000)};
+  ws.onerror=()=>{};
+}
+setInterval(()=>{const dt=(performance.now()-lt)/1000;if(dt>0&&connected)hud.textContent=`${(fc/dt).toFixed(1)}FPS|${(bc*8/1000/dt).toFixed(0)}Kbps`;fc=0;bc=0;lt=performance.now()},2000);
+connect();
+</script></body></html>

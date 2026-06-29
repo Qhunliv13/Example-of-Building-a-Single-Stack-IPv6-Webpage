@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no"><title>Remote Desktop</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;overflow:hidden;position:fixed;width:100vw;height:100vh;touch-action:none}
+canvas{position:fixed;top:0;left:0;width:100vw;height:100vh;object-fit:contain}
+#h{position:fixed;top:8px;left:8px;color:#0f0;font:13px monospace;background:rgba(0,0,0,.6);padding:6px 10px;border-radius:4px;z-index:10;pointer-events:none}
+#clock{position:fixed;top:0;left:0;width:100vw;height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;cursor:pointer}
+#time{font-size:18vw;font-weight:bold;letter-spacing:4px;font-family:Consolas,monospace;color:#fff}
+#date{color:#444;font-size:14px;letter-spacing:2px;margin-top:24px;font-family:Consolas,monospace}
+</style></head>
+<body>
+<canvas id="c"></canvas>
+<div id="h">启动...</div>
+<div id="clock"><div id="time"></div><div id="date"></div></div>
+<script>
+const WS_PROTO=location.protocol==='https:'?'wss://':'ws://';
+const H=location.hostname,WS_URL=`${WS_PROTO}${H}/h264`;
+const C=document.getElementById('c'),CX=C.getContext('2d'),hud=document.getElementById('h');
+const clock=document.getElementById('clock'),timeEl=document.getElementById('time'),dateEl=document.getElementById('date');
+let connected=false,rt=null,fc=0,lt=performance.now(),bc=0;
+
+function pad(n){return n.toString().padStart(2,'0')}
+function updateClock(){
+  const n=new Date();
+  timeEl.textContent=pad(n.getHours())+':'+pad(n.getMinutes())+':'+pad(n.getSeconds());
+  dateEl.textContent=n.getFullYear()+'/'+pad(n.getMonth()+1)+'/'+pad(n.getDate());
+}
+updateClock();setInterval(updateClock,1000);
+
+function showStream(){connected=true;C.style.display='block';hud.style.display='block';clock.style.display='none'}
+function showClock(){connected=false;C.style.display='none';hud.style.display='none';clock.style.display='flex'}
+
+function connect(){
+  if(rt){clearTimeout(rt);rt=null}
+  hud.textContent='连接...';showClock();
+  if(!('VideoDecoder' in window)){hud.textContent='浏览器不支持VideoDecoder';return}
+
+  let decoder=null,avcc=null,frameCount=0,first=true;
+  const ws=new WebSocket(WS_URL);ws.binaryType='arraybuffer';
+  ws.onopen=()=>{hud.textContent='已连接'};
+
+  ws.onmessage=(e)=>{
+    if(typeof e.data==='string')return;
+    bc+=e.data.byteLength;
+    const data=new Uint8Array(e.data);
+
+    if(avcc===null){
+      avcc=data;
+      const p=data[1],c1=data[2],l=data[3];
+      const codec='avc1.'+[p,c1,l].map(b=>b.toString(16).padStart(2,'0')).join('');
+      const cfg={codec, codedWidth:1920, codedHeight:1080};
+      decoder=new VideoDecoder({
+        output(frame){
+          fc++;
+          if(first){first=false;showStream()}
+          if(C.width!==frame.displayWidth||C.height!==frame.displayHeight){
+            C.width=frame.displayWidth;C.height=frame.displayHeight
+          }
+          CX.drawImage(frame,0,0);
+          frame.close();
+        },
+        error(e){console.error(e.message)}
+      });
+      decoder.configure({...cfg, description:new Uint8Array(data)});
+      return;
+    }
+
+    if(!decoder)return;
+    const type=frameCount===0?'key':'delta';
+    frameCount++;
+    try{decoder.decode(new EncodedVideoChunk({type,data:data.buffer,timestamp:performance.now()*1000}))}
+    catch(e){console.error(e.message)}
+  };
+
+  ws.onclose=()=>{showClock();if(!rt)rt=setTimeout(connect,2000)};
+  ws.onerror=()=>{};
+}
+
+setInterval(()=>{
+  const dt=(performance.now()-lt)/1000;
+  if(dt>0&&connected)hud.textContent=`${(fc/dt).toFixed(1)}FPS|${(bc*8/1000/dt).toFixed(0)}Kbps`;
+  fc=0;bc=0;lt=performance.now();
+},2000);
+
+clock.onclick=connect;
+connect();
+</script></body></html>

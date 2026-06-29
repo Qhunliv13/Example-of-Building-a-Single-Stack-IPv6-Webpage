@@ -1,0 +1,6 @@
+tunnel: fmtcv
+credentials-file: C:\Users\1\.cloudflared\87c2813e-b937-4145-998f-0c3aa1be46c7.json
+
+ingress:
+  - hostname: formatconversion.qhunliv13.online
+    service: http_status:404
